@@ -57,10 +57,35 @@ def is_beets_file_type(file_ext: str, beets_file_types: dict[str, str]) -> bool:
 
 
 def discover_artifacts(
-    source_path: Path, ignore: Sequence[str], beets_file_types: dict[str, str]
+    source_path: Path,
+    ignore: Sequence[str],
+    beets_file_types: dict[str, str],
+    recursive: bool = True,
 ) -> list[Path]:
-    """Walks a directory and returns a list of all non-beets-handled files."""
+    """Walks a directory and returns a list of all non-beets-handled files.
+
+    When `recursive` is False, only files directly inside `source_path` are
+    considered; no subdirectories are descended into. This is used when
+    scanning a multi-disc album's *parent* directory for shared artifacts:
+    that directory may, during a batch import, also contain unrelated
+    sibling albums as subdirectories, and descending into those would
+    misattribute their files to this album (see `is_multidisc()`'s
+    docstring for the full scenario). Legitimate shared multi-disc extras
+    (booklets, logs, etc. common to all discs) are expected to sit as loose
+    files directly in the parent directory, alongside the disc subfolders,
+    not nested further.
+    """
     artifacts: list[Path] = []
+
+    if not recursive:
+        for entry in sorted(source_path.iterdir()):
+            if not entry.is_file():
+                continue
+            if is_beets_file_type(entry.suffix, beets_file_types=beets_file_types):
+                continue
+            artifacts.append(entry)
+        return artifacts
+
     ignore_bytes: list[bytes] = [util.bytestring_path(p) for p in ignore]
 
     for root, _dirs, files in util.sorted_walk(
@@ -162,9 +187,35 @@ def is_path_within_ancestry(child_path: Path | None, parent_path: Path) -> bool:
 
 def is_multidisc(path_name: Path) -> bool:
     """Checks if a directory name matches the multi-disc pattern by replicating the
-    beets importer's pattern matching for disc folders.
+    beets importer's pattern matching for disc folders, *and* that at least one
+    sibling directory shares the same disc-numbered prefix.
+
+    A name matching the marker pattern (e.g. "disc 1", "cd2") is not enough on its
+    own: an ordinary album folder can incidentally contain such a marker as part of
+    its title/edition (e.g. "Artist - Album (disc 1) (Year)") without actually being
+    a disc subfolder nested inside a real multi-disc album directory. Requiring a
+    matching sibling mirrors the check beets' own importer does (see
+    ``albums_in_dir`` in ``beets/importer/tasks.py``) before collapsing directories
+    into a single multi-disc album, and avoids misidentifying `path_name.parent` as
+    a multi-disc album root when it's really just the batch's import directory.
     """
-    return any(pat.match(path_name.name) for pat in MULTIDISC_PATTERNS)
+    match = next(
+        (m for pat in MULTIDISC_PATTERNS if (m := pat.match(path_name.name))), None
+    )
+    if not match:
+        return False
+
+    sibling_pat = re.compile(rf"^{re.escape(match.group(1))}\d", re.I)
+
+    try:
+        siblings = path_name.parent.iterdir()
+    except OSError:
+        return False
+
+    return any(
+        sibling != path_name and sibling.is_dir() and sibling_pat.match(sibling.name)
+        for sibling in siblings
+    )
 
 
 def get_multidisc_ignore_paths(parent_path: Path) -> list[str]:

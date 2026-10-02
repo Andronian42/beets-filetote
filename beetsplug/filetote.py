@@ -697,6 +697,11 @@ class FiletotePlugin(BeetsPlugin):
                     source_path=multidisc_parent_path,
                     ignore=config["ignore"].as_str_seq() + disc_specific_ignores,
                     beets_file_types=self._beets_file_types,
+                    # Loose files directly in the parent only -- never descend
+                    # into subdirectories, since during a batch import the
+                    # parent may also hold unrelated sibling albums whose
+                    # files must not be swept in as this album's artifacts.
+                    recursive=False,
                 )
 
                 if parent_artifacts:
